@@ -130,6 +130,12 @@ Il vous sera demandé de coller votre **clé privée** `age` (celle générée l
 
 - **Clés Privées** : Le wizard génère une paire de clés. La clé publique est stockée sur le serveur pour chiffrer les backups. **La clé privée vous est affichée UNE SEULE FOIS.** Vous devez la sauvegarder en lieu sûr (gestionnaire de mots de passe). Sans elle, les backups sont irrécupérables.
 - **Permissions** : Les dossiers de configuration et de logs sont restreints à `root`.
+- **SSH Distant** : Avant de configurer un backup distant (rsync/ssh), connectez-vous **manuellement** une première fois au serveur cible pour valider son empreinte SSH :
+  ```bash
+  ssh user@remote-server
+  # Acceptez l'empreinte, puis déconnectez-vous
+  ```
+  Cela évite les risques d'attaque MITM lors de la première connexion automatisée.
 
 ## License
 
