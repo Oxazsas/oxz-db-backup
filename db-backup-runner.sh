@@ -11,13 +11,13 @@
 #   selon .restore_test.every_days (0=off). Envoie une notif webhook pour pousser au test manuel de restore.
 #
 # Usage:
-#   sudo /opt/db-backup/db-backup-runner.sh                 # wizard (si TTY)
-#   sudo /opt/db-backup/db-backup-runner.sh --cron          # force mode non-interactif
-#   sudo /opt/db-backup/db-backup-runner.sh --job iemf-prod --force
-#   sudo /opt/db-backup/db-backup-runner.sh --dry-run
+#   sudo oxz-db-backup-runner                 # wizard (si TTY)
+#   sudo oxz-db-backup-runner --cron          # force mode non-interactif
+#   sudo oxz-db-backup-runner --job iemf-prod --force
+#   sudo oxz-db-backup-runner --dry-run
 #
-# Cron recommandé (/etc/cron.d/db-backup):
-#   0 * * * * root /opt/db-backup/db-backup-runner.sh --cron
+# Cron recommandé (/etc/cron.d/oxz-db-backup):
+#   0 * * * * root /usr/local/lib/oxz-db-backup/db-backup-runner.sh --cron
 
 set -u -o pipefail
 IFS=$'\n\t'
@@ -26,7 +26,7 @@ PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ###############################################
 # Constantes / chemins
 ###############################################
-readonly APP_NAME="db-backup"
+readonly APP_NAME="oxz-db-backup"
 readonly SCRIPT_VERSION="1.2"
 
 readonly CONFIG_DIR="/etc/${APP_NAME}/jobs"

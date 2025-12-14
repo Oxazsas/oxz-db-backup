@@ -13,7 +13,7 @@ IFS=$'\n\t'
 ###############################################
 # Constantes
 ###############################################
-readonly APP_NAME="db-backup"
+readonly APP_NAME="oxz-db-backup"
 readonly SCRIPT_VERSION="1.1"
 
 readonly CONFIG_DIR="/etc/${APP_NAME}/jobs"

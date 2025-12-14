@@ -78,7 +78,7 @@ Note : Tous les scripts doivent être exécutés en tant que `root` (ou avec `su
 Lancez l'assistant pour créer votre premier job de sauvegarde :
 
 ```bash
-sudo ./db-backup-wizard.sh
+sudo oxz-db-backup
 ```
 
 Suivez les instructions à l'écran pour :
@@ -91,17 +91,17 @@ Suivez les instructions à l'écran pour :
 
 ### 2. Automatisation (Cron)
 
-Le `runner` est fait pour tourner automatiquement. Ajoutez une entrée dans votre crontab (par exemple, toutes les heures) :
+Le `runner` est fait pour tourner automatiquement. Le wizard peut configurer le cron pour vous (option "Runner" > "Installer cron"), ou vous pouvez l'ajouter manuellement :
 
 ```bash
-# /etc/cron.d/db-backup
-0 * * * * root /opt/db-backup/db-backup-runner.sh --cron >> /var/log/db-backup/cron.log 2>&1
+# /etc/cron.d/oxz-db-backup
+0 * * * * root /usr/local/lib/oxz-db-backup/db-backup-runner.sh --cron >> /var/log/oxz-db-backup/cron.log 2>&1
 ```
 
 Vous pouvez aussi lancer le runner manuellement pour voir l'état des jobs :
 
 ```bash
-sudo ./db-backup-runner.sh
+sudo /usr/local/lib/oxz-db-backup/db-backup-runner.sh
 ```
 
 ### 3. Restauration
@@ -109,18 +109,18 @@ sudo ./db-backup-runner.sh
 Pour restaurer une sauvegarde :
 
 ```bash
-sudo ./db-backup-restore.sh
+sudo /usr/local/lib/oxz-db-backup/db-backup-restore.sh
 ```
 
 Il vous sera demandé de coller votre **clé privée** `age` (celle générée lors de la création du job). Le script s'occupe du reste.
 
 ## 📁 Structure des fichiers
 
-- **Configuration** : `/etc/db-backup/jobs/*.json`
-- **Clés publiques** : `/etc/db-backup/keys/*.pub`
-- **Secrets** : `/etc/db-backup/secrets/` (Credentials obfusqués)
-- **Sauvegardes** : `/var/backups/db-backup/`
-- **Logs** : `/var/log/db-backup/`
+- **Configuration** : `/etc/oxz-db-backup/jobs/*.json`
+- **Clés publiques** : `/etc/oxz-db-backup/keys/*.pub`
+- **Secrets** : `/etc/oxz-db-backup/secrets/` (Credentials obfusqués)
+- **Sauvegardes** : `/var/backups/oxz-db-backup/`
+- **Logs** : `/var/log/oxz-db-backup/`
 
 ## ⚠️ Notes de sécurité
 

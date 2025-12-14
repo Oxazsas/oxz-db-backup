@@ -12,7 +12,7 @@ PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ###############################################
 # Constantes / chemins
 ###############################################
-readonly APP_NAME="db-backup"
+readonly APP_NAME="oxz-db-backup"
 readonly SCRIPT_VERSION="3.2"
 readonly VERSION_JSON=1
 
