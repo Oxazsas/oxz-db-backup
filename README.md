@@ -54,24 +54,28 @@ sudo apt install -y bash curl jq rsync zstd age mysql-client
 1.  Clonez ce dépôt :
 
     ```bash
-    git clone https://github.com/Oxazsas/oxz-db-backup.git /opt/db-backup
-    cd /opt/db-backup
+    git clone https://github.com/Oxazsas/oxz-db-backup.git
+    cd oxz-db-backup
     ```
 
-2.  Rendez les scripts exécutables :
+2.  Lancez l'installateur :
 
     ```bash
-    chmod +x *.sh
+    sudo ./install.sh
     ```
 
-3.  (Optionnel) Créez les liens symboliques pour un accès global :
-    ```bash
-    sudo ln -s /opt/db-backup/db-backup-wizard.sh /usr/local/bin/db-backup
-    ```
+    L'installateur va :
+
+    - Vérifier les dépendances
+    - Créer les dossiers système (`/etc/oxz-db-backup`, `/var/lib/oxz-db-backup`, etc.)
+    - Installer les scripts dans `/usr/local/lib/oxz-db-backup/`
+    - Créer la commande `oxz-db-backup` (et l'alias `oxzbkp`)
+    - Configurer logrotate
+    - Migrer automatiquement une ancienne installation `db-backup` si détectée
 
 ## 📖 Utilisation
 
-Note : Tous les scripts doivent être exécutés en tant que `root` (ou avec `sudo`) car ils écrivent dans `/etc/db-backup` et `/var/backups`.
+Note : Tous les scripts doivent être exécutés en tant que `root` (ou avec `sudo`) car ils écrivent dans `/etc/oxz-db-backup` et `/var/backups/oxz-db-backup`.
 
 ### 1. Configuration (Wizard)
 

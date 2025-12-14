@@ -214,9 +214,9 @@ print_intro_runner() {
     printf "\n"
 
     printf "Fonctionnement (simplifié)\n"
-    printf "1) Le runner charge la configuration des jobs (ex: /etc/db-backup/jobs/*.json)\n"
+    printf "1) Le runner charge la configuration des jobs (ex: %s/*.json)\n" "${CONFIG_DIR}"
     printf "2) Il détermine les jobs \"dus\" (selon schedule) et les exécute séquentiellement\n"
-    printf "3) Il écrit l'état (succès/échec) dans /var/lib/db-backup/state\n"
+    printf "3) Il écrit l'état (succès/échec) dans %s\n" "${STATE_DIR}"
     printf "4) Il logge tout (stdout/stderr) pour être exploitable via cron/systemd\n"
     printf "\n"
 

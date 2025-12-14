@@ -1,27 +1,31 @@
 #!/usr/bin/env bash
-# install.sh — Installeur pour oxz-db-backup
-# Rôle : Installe les scripts oxz-db-backup, migre les configs existantes et configure le système.
-# Version : 1.0
+# install.sh — Installeur pour oxz-db-backup (safe + idempotent)
+# Version : 1.1
 
 set -euo pipefail
 IFS=$'\n\t'
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # === Configuration ===
 readonly APP_NAME="oxz-db-backup"
 readonly OLD_APP_NAME="db-backup"
 
 readonly INSTALL_DIR_DEFAULT="/usr/local/lib/${APP_NAME}"
-readonly BIN_DIR="/usr/local/bin"
-readonly BIN_NAME="${APP_NAME}"
+readonly BIN_DIR_DEFAULT="/usr/local/bin"
+readonly BIN_NAME_DEFAULT="${APP_NAME}"
+readonly ALIAS_NAME_DEFAULT="oxzbkp"   # alias sympa (optionnel)
 
-# Dossiers système FHS
+# FHS
 readonly ETC_DIR="/etc/${APP_NAME}"
 readonly VAR_LIB="/var/lib/${APP_NAME}"
 readonly VAR_LOG="/var/log/${APP_NAME}"
 readonly VAR_BACKUP="/var/backups/${APP_NAME}"
 
-# Dossiers legacy pour migration
+# Legacy
 readonly OLD_ETC_DIR="/etc/${OLD_APP_NAME}"
+readonly OLD_VAR_LIB="/var/lib/${OLD_APP_NAME}"
+readonly OLD_VAR_LOG="/var/log/${OLD_APP_NAME}"
+readonly OLD_VAR_BACKUP="/var/backups/${OLD_APP_NAME}"
 
 # Couleurs
 RED='\033[0;31m'
@@ -30,298 +34,409 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# === Variables Globales ===
+# === Variables globales ===
 DRY_RUN=false
 FORCE=false
-MIGRATE_MODE="copy" # none, copy, move
+UNINSTALL=false
+PURGE_DATA=false
+MIGRATE_MODE="copy"   # none|copy|move (copy = safe)
 INSTALL_DIR="${INSTALL_DIR_DEFAULT}"
+BIN_DIR="${BIN_DIR_DEFAULT}"
+BIN_NAME="${BIN_NAME_DEFAULT}"
+ALIAS_NAME="${ALIAS_NAME_DEFAULT}"
 
-# === Fonctions Utilitaires ===
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+SRC_WIZ="${SCRIPT_DIR}/db-backup-wizard.sh"
+SRC_RUN="${SCRIPT_DIR}/db-backup-runner.sh"
+SRC_RST="${SCRIPT_DIR}/db-backup-restore.sh"
+
+DST_WIZ=""
+DST_RUN=""
+DST_RST=""
 
 log_info() { printf "${BLUE}[INFO]${NC} %s\n" "$*"; }
 log_ok()   { printf "${GREEN}[OK]${NC}   %s\n" "$*"; }
 log_warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$*"; }
 log_err()  { printf "${RED}[ERR]${NC}  %s\n" "$*" >&2; }
 
-die() {
-  log_err "$1"
-  exit 1
-}
+die() { log_err "$1"; exit 1; }
 
-# Vérifie si une commande existe
-check_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    die "Dépendance manquante : $1. Installez-la via apt (jq, age, zstd, rsync, mysql-client)."
-  fi
-}
+is_tty() { [ -t 0 ] && [ -t 1 ]; }
 
-# Exécute une commande ou l'affiche en dry-run
 run() {
   if [ "$DRY_RUN" = true ]; then
-    echo "[DRY-RUN] $*"
+    printf "[DRY-RUN] %q " "$@"
+    printf "\n"
   else
     "$@"
   fi
 }
 
-# === Pré-vérifications ===
+require_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    die "Lancez en root (ex: sudo ./install.sh)"
+  fi
+}
+
+check_cmd() {
+  local c="$1"
+  command -v "$c" >/dev/null 2>&1 || die "Dépendance manquante: $c"
+}
+
+check_one_of() {
+  # usage: check_one_of "mysql or mariadb" mysql mariadb
+  local label="$1"; shift
+  local c
+  for c in "$@"; do
+    if command -v "$c" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  die "Dépendance manquante: ${label} (installez un des suivants: $*)"
+}
+
+has_crlf() {
+  # 0 si CRLF détecté
+  local f="$1"
+  LC_ALL=C grep -n $'\r' "$f" >/dev/null 2>&1
+}
+
+print_intro_install() {
+  cat >&2 <<EOF
+
+============================================================
+${APP_NAME} — install.sh
+============================================================
+
+Ce script va :
+- Vérifier les prérequis (binaires, syntaxe bash, CRLF)
+- Créer les dossiers FHS :
+  * ${ETC_DIR} (jobs/keys/secrets)
+  * ${VAR_LIB} (state)
+  * ${VAR_LOG} (logs)
+  * ${VAR_BACKUP} (backups + .tmp)
+- Migrer (optionnel) l'existant depuis "${OLD_APP_NAME}" :
+  * ${OLD_ETC_DIR} -> ${ETC_DIR}
+  * ${OLD_VAR_LIB} -> ${VAR_LIB}
+- Installer les 3 scripts dans : ${INSTALL_DIR}
+- Créer une commande système : ${BIN_DIR}/${BIN_NAME} (lance le wizard)
+- Installer logrotate : /etc/logrotate.d/${APP_NAME}
+
+Par défaut, RIEN n'est supprimé côté legacy (mode migration = copy).
+EOF
+}
 
 pre_checks() {
-  log_info "Vérification des prérequis..."
+  log_info "Préchecks…"
 
-  # 1. Root
-  if [ "$(id -u)" -ne 0 ]; then
-    die "Ce script doit être exécuté en root (sudo)."
-  fi
+  require_root
 
-  # 2. Fichiers sources
-  local files=("db-backup-wizard.sh" "db-backup-runner.sh" "db-backup-restore.sh")
+  # Fichiers sources
+  local files=("$SRC_WIZ" "$SRC_RUN" "$SRC_RST")
+  local f
   for f in "${files[@]}"; do
-    if [ ! -f "./$f" ]; then
-      die "Fichier source introuvable : ./$f. Lancez install.sh depuis le dossier contenant les scripts."
-    fi
-    # Syntax check
-    if ! bash -n "./$f"; then
-      die "Erreur de syntaxe détectée dans $f."
-    fi
-    # Check CRLF
-    if file "./$f" | grep -q 'CRLF'; then
-      die "Fichier $f contient des retours à la ligne DOS (CRLF). Convertissez-le (dos2unix)."
+    [ -f "$f" ] || die "Fichier source introuvable: $f (lancez install.sh depuis le dossier des scripts)"
+    bash -n "$f" >/dev/null 2>&1 || die "Erreur de syntaxe bash: $(basename "$f")"
+    if has_crlf "$f"; then
+      die "CRLF détecté dans $(basename "$f") (faites un dos2unix)."
     fi
   done
 
-  # 3. Dépendances
+  # Dépendances utilisées par l’outil (wizard/runner/restore)
   check_cmd jq
   check_cmd age
+  check_cmd age-keygen
   check_cmd zstd
   check_cmd rsync
-  check_cmd mysql   # mysql-client
+  check_cmd ssh
+  check_cmd curl
+  check_cmd sha256sum
+  check_one_of "mysql or mariadb client" mysql mariadb
+  check_one_of "mysqldump or mariadb-dump" mysqldump mariadb-dump
+  check_cmd awk
+  check_cmd sed
+  check_cmd grep
 
-  log_ok "Prérequis validés."
-}
-
-# === Installation Système ===
-
-install_files() {
-  log_info "Installation dans ${INSTALL_DIR}..."
-
-  if [ -d "${INSTALL_DIR}" ] && [ "$FORCE" = false ]; then
-    log_warn "Le répertoire d'installation ${INSTALL_DIR} existe déjà."
-    log_warn "Utilisez --force pour écraser."
-    exit 1
+  # Sanity: les scripts doivent *déjà* être renames en namespace oxz-db-backup
+  # (sinon vous aurez un wrapper oxz-db-backup qui continue d'écrire dans /etc/db-backup etc.)
+  if grep -q 'readonly APP_NAME="db-backup"' "$SRC_WIZ" "$SRC_RUN" "$SRC_RST" 2>/dev/null; then
+    log_warn "Au moins un script contient encore: readonly APP_NAME=\"db-backup\""
+    log_warn "=> l'installation fonctionnera, MAIS vos scripts utiliseront encore /etc/db-backup/..."
+    log_warn "=> faites le renommage APP_NAME dans les 3 scripts avant (ou acceptez ce comportement)."
   fi
 
-  # Création du dossier d'installation
-  run mkdir -p "${INSTALL_DIR}"
-  
-  # Copie des scripts
-  run cp ./db-backup-wizard.sh "${INSTALL_DIR}/"
-  run cp ./db-backup-runner.sh "${INSTALL_DIR}/"
-  run cp ./db-backup-restore.sh "${INSTALL_DIR}/"
+  log_ok "Préchecks OK"
+}
 
-  # Permissions sécurisées
-  run chown -R root:root "${INSTALL_DIR}"
-  run chmod 0755 "${INSTALL_DIR}"
-  run chmod 0755 "${INSTALL_DIR}"/*.sh
+ensure_dirs() {
+  log_info "Création des dossiers FHS…"
 
-  # Wrapper binaire global
-  log_info "Création de la commande ${BIN_NAME}..."
-  
+  # /etc
+  run install -d -m 700 -o root -g root "${ETC_DIR}"
+  run install -d -m 700 -o root -g root "${ETC_DIR}/jobs" "${ETC_DIR}/secrets"
+  run install -d -m 755 -o root -g root "${ETC_DIR}/keys"
+
+  # /var/lib
+  run install -d -m 700 -o root -g root "${VAR_LIB}"
+  run install -d -m 700 -o root -g root "${VAR_LIB}/state"
+
+  # /var/log
+  run install -d -m 750 -o root -g root "${VAR_LOG}"
+
+  # /var/backups
+  run install -d -m 750 -o root -g root "${VAR_BACKUP}"
+  run install -d -m 750 -o root -g root "${VAR_BACKUP}/.tmp"
+
+  log_ok "Dossiers prêts"
+}
+
+dir_has_content() {
+  local d="$1"
+  [ -d "$d" ] || return 1
+  find "$d" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .
+}
+
+rsync_merge() {
+  local src="$1" dst="$2"
+  local -a args=(rsync -a)
+  if [ "$FORCE" = false ]; then
+    args+=(--ignore-existing)
+  fi
+  args+=("${src%/}/" "${dst%/}/")
+  run "${args[@]}"
+}
+
+fix_perms() {
+  # best-effort: on remet des perms cohérentes après migration
+  run chown -R root:root "${ETC_DIR}" "${VAR_LIB}" "${VAR_LOG}" "${VAR_BACKUP}" >/dev/null 2>&1 || true
+
+  run chmod 700 "${ETC_DIR}" "${ETC_DIR}/jobs" "${ETC_DIR}/secrets" "${VAR_LIB}" "${VAR_LIB}/state" >/dev/null 2>&1 || true
+  run chmod 755 "${ETC_DIR}/keys" >/dev/null 2>&1 || true
+  run chmod 750 "${VAR_LOG}" "${VAR_BACKUP}" "${VAR_BACKUP}/.tmp" >/dev/null 2>&1 || true
+
+  # fichiers typiques
   if [ "$DRY_RUN" = false ]; then
-    cat <<EOF > "${BIN_DIR}/${BIN_NAME}"
-#!/bin/bash
-exec "${INSTALL_DIR}/db-backup-wizard.sh" "\$@"
-EOF
-    chmod +x "${BIN_DIR}/${BIN_NAME}"
-  else
-    echo "[DRY-RUN] Création du wrapper ${BIN_DIR}/${BIN_NAME}"
+    find "${ETC_DIR}/jobs" -maxdepth 1 -type f -name "*.json" -exec chmod 600 {} \; 2>/dev/null || true
+    find "${ETC_DIR}/keys" -maxdepth 1 -type f -name "*.age.pub" -exec chmod 644 {} \; 2>/dev/null || true
+    find "${ETC_DIR}/secrets" -maxdepth 1 -type f -exec chmod 600 {} \; 2>/dev/null || true
+    find "${VAR_LIB}/state" -maxdepth 1 -type f -name "*.json" -exec chmod 600 {} \; 2>/dev/null || true
   fi
-
-  log_ok "Fichiers installés."
 }
-
-setup_namespaces() {
-  log_info "Création des répertoires de données..."
-
-  # /etc/oxz-db-backup (Config)
-  run mkdir -p "${ETC_DIR}/jobs"
-  run mkdir -p "${ETC_DIR}/keys"
-  run mkdir -p "${ETC_DIR}/secrets"
-  
-  # Permissions secrets
-  run chmod 0700 "${ETC_DIR}/secrets"
-  run chmod 0700 "${ETC_DIR}/keys" # Les clés privées y sont temporairement ou non, sécurité max
-
-  # /var/lib/oxz-db-backup (State)
-  run mkdir -p "${VAR_LIB}/state"
-
-  # /var/log/oxz-db-backup (Logs)
-  run mkdir -p "${VAR_LOG}"
-  run chmod 0750 "${VAR_LOG}"
-
-  # /var/backups/oxz-db-backup (Stockage local)
-  run mkdir -p "${VAR_BACKUP}/.tmp"
-  
-  log_ok "Structure de dossiers créée."
-}
-
-# === Migration ===
 
 migrate_legacy() {
-  if [ ! -d "${OLD_ETC_DIR}" ]; then
-    return # Rien à migrer
+  if [ ! -d "${OLD_ETC_DIR}" ] && [ ! -d "${OLD_VAR_LIB}" ]; then
+    log_info "Pas de legacy ${OLD_APP_NAME} détecté (skip migration)."
+    return 0
   fi
 
-  if [ "${MIGRATE_MODE}" == "none" ]; then
-    log_info "Ancienne configuration détectée dans ${OLD_ETC_DIR}, mais migration désactivée (--migrate none)."
-    return
-  fi
-  
-  # Si le mode est par défaut "copy" (auto) mais qu'on a détecté une vieille config
-  # et qu'on est en interactif, on demande confirmation/choix
-  if [ "${MIGRATE_MODE}" == "copy" ] && [ -t 0 ]; then
-     echo ""
-     log_warn "Une ancienne configuration a été trouvée dans ${OLD_ETC_DIR}."
-     echo "Que voulez-vous faire ?"
-     echo "  [1] Copier vers ${ETC_DIR} (Défaut - Sûr)"
-     echo "  [2] Déplacer vers ${ETC_DIR} (Supprime l'ancien)"
-     echo "  [3] Ne rien faire (Ignorer)"
-     read -r -p "Choix [1]: " ans
-     case "$ans" in
-       2) MIGRATE_MODE="move" ;;
-       3) MIGRATE_MODE="none" ;;
-       *) MIGRATE_MODE="copy" ;;
-     esac
-     echo ""
+  if [ "${MIGRATE_MODE}" = "none" ]; then
+    log_info "Legacy détecté, mais migration désactivée (--migrate none)."
+    return 0
   fi
 
-  if [ "${MIGRATE_MODE}" == "none" ]; then
-    return
+  if is_tty && [ "${MIGRATE_MODE}" = "copy" ] && ( [ -d "${OLD_ETC_DIR}" ] || [ -d "${OLD_VAR_LIB}" ] ); then
+    echo "" >&2
+    log_warn "Legacy détecté (${OLD_APP_NAME}). Mode actuel: copy."
+    echo "Choix migration:" >&2
+    echo "  [1] Copier (safe, ne supprime pas l'ancien)  <-- défaut" >&2
+    echo "  [2] Déplacer (supprime l'ancien une fois migré)" >&2
+    echo "  [3] Ne rien faire" >&2
+    read -r -p "Choix [1]: " ans || true
+    case "${ans:-1}" in
+      2) MIGRATE_MODE="move" ;;
+      3) MIGRATE_MODE="none" ;;
+      *) MIGRATE_MODE="copy" ;;
+    esac
+    echo "" >&2
   fi
 
-  log_info "Migration des configurations depuis ${OLD_ETC_DIR} (Mode: ${MIGRATE_MODE})..."
-
-  # Fonction interne de copie/move
-  do_migrate() {
-    local src="$1"
-    local dest="$2"
-    if [ -d "$src" ] && [ "$(ls -A "$src")" ]; then
-       log_info "Integration de $src vers $dest..."
-       # On utilise rsync pour merger proprement sans écraser brutalement si existant
-       run rsync -a "$src/" "$dest/"
-       if [ "${MIGRATE_MODE}" == "move" ]; then
-         run rm -rf "$src"
-       fi
-    fi
-  }
-
-  do_migrate "${OLD_ETC_DIR}/jobs" "${ETC_DIR}/jobs"
-  do_migrate "${OLD_ETC_DIR}/keys" "${ETC_DIR}/keys"
-  do_migrate "${OLD_ETC_DIR}/secrets" "${ETC_DIR}/secrets"
-  
-  # Migration du state (important pour history)
-  if [ -d "/var/lib/${OLD_APP_NAME}/state" ]; then
-    do_migrate "/var/lib/${OLD_APP_NAME}/state" "${VAR_LIB}/state"
+  if [ "${MIGRATE_MODE}" = "none" ]; then
+    return 0
   fi
 
-  log_ok "Migration terminée."
+  log_info "Migration legacy (mode: ${MIGRATE_MODE})…"
+
+  # /etc/db-backup -> /etc/oxz-db-backup
+  if dir_has_content "${OLD_ETC_DIR}/jobs"; then
+    log_info "Merge: ${OLD_ETC_DIR}/jobs -> ${ETC_DIR}/jobs"
+    rsync_merge "${OLD_ETC_DIR}/jobs" "${ETC_DIR}/jobs"
+    [ "${MIGRATE_MODE}" = "move" ] && run rm -rf "${OLD_ETC_DIR}/jobs"
+  fi
+  if dir_has_content "${OLD_ETC_DIR}/keys"; then
+    log_info "Merge: ${OLD_ETC_DIR}/keys -> ${ETC_DIR}/keys"
+    rsync_merge "${OLD_ETC_DIR}/keys" "${ETC_DIR}/keys"
+    [ "${MIGRATE_MODE}" = "move" ] && run rm -rf "${OLD_ETC_DIR}/keys"
+  fi
+  if dir_has_content "${OLD_ETC_DIR}/secrets"; then
+    log_info "Merge: ${OLD_ETC_DIR}/secrets -> ${ETC_DIR}/secrets"
+    rsync_merge "${OLD_ETC_DIR}/secrets" "${ETC_DIR}/secrets"
+    [ "${MIGRATE_MODE}" = "move" ] && run rm -rf "${OLD_ETC_DIR}/secrets"
+  fi
+
+  # /var/lib/db-backup/state -> /var/lib/oxz-db-backup/state
+  if dir_has_content "${OLD_VAR_LIB}/state"; then
+    log_info "Merge: ${OLD_VAR_LIB}/state -> ${VAR_LIB}/state"
+    rsync_merge "${OLD_VAR_LIB}/state" "${VAR_LIB}/state"
+    [ "${MIGRATE_MODE}" = "move" ] && run rm -rf "${OLD_VAR_LIB}/state"
+  fi
+
+  # (on ne touche PAS aux backups/logs legacy ici : trop risqué + potentiellement volumineux)
+  fix_perms
+  log_ok "Migration terminée"
 }
 
-# === Logrotate ===
+install_files() {
+  log_info "Installation des scripts dans ${INSTALL_DIR}…"
+
+  run install -d -m 755 -o root -g root "${INSTALL_DIR}"
+
+  DST_WIZ="${INSTALL_DIR}/db-backup-wizard.sh"
+  DST_RUN="${INSTALL_DIR}/db-backup-runner.sh"
+  DST_RST="${INSTALL_DIR}/db-backup-restore.sh"
+
+  run install -m 755 -o root -g root "$SRC_WIZ" "$DST_WIZ"
+  run install -m 755 -o root -g root "$SRC_RUN" "$DST_RUN"
+  run install -m 755 -o root -g root "$SRC_RST" "$DST_RST"
+
+  # Wrapper commande
+  run install -d -m 755 -o root -g root "${BIN_DIR}"
+  local wrapper="${BIN_DIR}/${BIN_NAME}"
+
+  if [ "$DRY_RUN" = false ]; then
+    cat >"$wrapper" <<EOF
+#!/usr/bin/env bash
+exec "${DST_WIZ}" "\$@"
+EOF
+    chmod 755 "$wrapper"
+    chown root:root "$wrapper"
+  else
+    echo "[DRY-RUN] Écriture wrapper: ${wrapper}"
+  fi
+
+  # Alias optionnel
+  if [ -n "${ALIAS_NAME}" ] && [ "${ALIAS_NAME}" != "${BIN_NAME}" ]; then
+    local alias_path="${BIN_DIR}/${ALIAS_NAME}"
+    if [ "$DRY_RUN" = false ]; then
+      ln -sf "${wrapper}" "${alias_path}"
+    else
+      echo "[DRY-RUN] ln -sf ${wrapper} ${alias_path}"
+    fi
+  fi
+
+  log_ok "Installation scripts + commande OK"
+}
 
 setup_logrotate() {
-  log_info "Configuration de logrotate..."
-  local lr_file="/etc/logrotate.d/${APP_NAME}"
-  
+  log_info "Configuration logrotate…"
+
+  local lr="/etc/logrotate.d/${APP_NAME}"
+  local grp="adm"
+  if ! getent group adm >/dev/null 2>&1; then
+    grp="root"
+  fi
+
   if [ "$DRY_RUN" = false ]; then
-    cat <<EOF > "${lr_file}"
-${VAR_LOG}/*.log
-${VAR_LOG}/*.out
-${VAR_LOG}/*.err
-{
+    cat >"$lr" <<EOF
+${VAR_LOG}/*.log ${VAR_LOG}/*.out ${VAR_LOG}/*.err {
     daily
     missingok
     rotate 14
     compress
     delaycompress
     notifempty
-    create 0640 root adm
+    create 0640 root ${grp}
     sharedscripts
     postrotate
-        # Si le runner tourne, il logue via redirection, pas besoin de reload daemon
         true
     endscript
 }
 EOF
-    chmod 0644 "${lr_file}"
+    chmod 644 "$lr"
+    chown root:root "$lr"
   else
-    echo "[DRY-RUN] Création fichier ${lr_file}"
+    echo "[DRY-RUN] Écriture logrotate: ${lr}"
   fi
-  log_ok "Logrotate configuré."
+
+  log_ok "Logrotate OK"
 }
 
-# === Help ===
+do_uninstall() {
+  log_info "Désinstallation… (ne supprime pas les données par défaut)"
+
+  local wrapper="${BIN_DIR}/${BIN_NAME}"
+  local alias_path="${BIN_DIR}/${ALIAS_NAME}"
+  local lr="/etc/logrotate.d/${APP_NAME}"
+
+  [ -f "$wrapper" ] && run rm -f "$wrapper" || true
+  [ -n "${ALIAS_NAME}" ] && [ -f "$alias_path" ] && run rm -f "$alias_path" || true
+  [ -f "$lr" ] && run rm -f "$lr" || true
+  [ -d "${INSTALL_DIR}" ] && run rm -rf "${INSTALL_DIR}" || true
+
+  if [ "$PURGE_DATA" = true ]; then
+    log_warn "PURGE activé: suppression des données ${ETC_DIR} ${VAR_LIB} ${VAR_LOG} (pas les backups)."
+    [ -d "${ETC_DIR}" ] && run rm -rf "${ETC_DIR}" || true
+    [ -d "${VAR_LIB}" ] && run rm -rf "${VAR_LIB}" || true
+    [ -d "${VAR_LOG}" ] && run rm -rf "${VAR_LOG}" || true
+  fi
+
+  log_ok "Désinstallation terminée"
+}
 
 usage() {
-  cat <<EOF
-Usage: ./install.sh [OPTIONS]
-
-Installe oxz-db-backup sur le système.
+  cat >&2 <<EOF
+Usage: sudo ./install.sh [OPTIONS]
 
 Options:
-  --install-dir DIR   Répertoire d'installation (Défaut: ${INSTALL_DIR_DEFAULT})
-  --migrate MODE      Mode de migration pour les anciennes configs 'db-backup'
-                      Modes: copy (défaut), move, none
-  --force             Forcer l'installation même si le dossier existe déjà
-  --dry-run           Affiche les commandes sans les exécuter
-  --help              Affiche cette aide
+  --install-dir DIR     Répertoire d'installation (défaut: ${INSTALL_DIR_DEFAULT})
+  --bin-dir DIR         Répertoire des binaires (défaut: ${BIN_DIR_DEFAULT})
+  --cmd NAME            Nom de commande (défaut: ${BIN_NAME_DEFAULT})
+  --alias NAME          Alias (défaut: ${ALIAS_NAME_DEFAULT}, vide = désactiver)
+  --migrate MODE        Migration legacy db-backup: none|copy|move (défaut: copy)
+  --force               Écrase/merge plus agressif (migration overwrite + réinstall)
+  --dry-run             Affiche les actions sans exécuter
+  --uninstall           Désinstalle (sans effacer les données)
+  --purge-data          Avec --uninstall: supprime aussi /etc, /var/lib, /var/log (pas /var/backups)
+  --help                Aide
 
 EOF
   exit 0
 }
 
-# === Main ===
-
+# === CLI ===
 while [[ $# -gt 0 ]]; do
-  key="$1"
-  case $key in
-    --install-dir)
-      INSTALL_DIR="$2"
-      shift; shift
-      ;;
-    --migrate)
-      MIGRATE_MODE="$2"
-      shift; shift
-      ;;
-    --force)
-      FORCE=true
-      shift
-      ;;
-    --dry-run)
-      DRY_RUN=true
-      shift
-      ;;
-    --help|-h)
-      usage
-      ;;
-    *)
-      log_err "Option inconnue : $1"
-      usage
-      ;;
+  case "$1" in
+    --install-dir) INSTALL_DIR="${2:-}"; shift 2 ;;
+    --bin-dir) BIN_DIR="${2:-}"; shift 2 ;;
+    --cmd) BIN_NAME="${2:-}"; shift 2 ;;
+    --alias) ALIAS_NAME="${2:-}"; shift 2 ;;
+    --migrate) MIGRATE_MODE="${2:-}"; shift 2 ;;
+    --force) FORCE=true; shift ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    --uninstall) UNINSTALL=true; shift ;;
+    --purge-data) PURGE_DATA=true; shift ;;
+    --help|-h) usage ;;
+    *) die "Option inconnue: $1 (--help)" ;;
   esac
 done
 
-echo "========================================"
-echo "    Installation de ${APP_NAME}       "
-echo "========================================"
+print_intro_install
+
+if [ "$UNINSTALL" = true ]; then
+  require_root
+  do_uninstall
+  exit 0
+fi
 
 pre_checks
-setup_namespaces
+ensure_dirs
 migrate_legacy
 install_files
 setup_logrotate
 
-echo ""
-log_ok "Installation terminée avec succès !"
-log_info "Vous pouvez maintenant utiliser la commande : ${BIN_NAME}"
-log_info "Les fichiers de config sont dans : ${ETC_DIR}"
+echo "" >&2
+log_ok "Installation terminée."
+log_info "Commande: ${BIN_DIR}/${BIN_NAME}"
+[ -n "${ALIAS_NAME}" ] && log_info "Alias:   ${BIN_DIR}/${ALIAS_NAME}"
+log_info "Config:  ${ETC_DIR}"
+log_info "Logs:    ${VAR_LOG}"
+log_info "Backups: ${VAR_BACKUP}"
