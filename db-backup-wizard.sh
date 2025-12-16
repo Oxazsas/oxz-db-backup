@@ -179,7 +179,7 @@ print_intro_wizard() {
 
     printf "Sécurité :\n"
     printf " - Les backups sont chiffrés avec age (clé publique sur le serveur)\n"
-    printf " - La clé PRIVÉE n'est jamais stockée ici : gardez-la (1Password, etc.)\n"
+    printf " - La clé PRIVÉE n'est jamais stockée ici : sauvegardez-la dans un environnement sécurisé (gestionnaire de mots de passe, coffre-fort, etc.)\n"
     printf " - Sans clé privée => restauration impossible\n\n"
 
     printf "Ponts :\n"
@@ -377,7 +377,7 @@ confirm_keys_pasteback() {
     return 1
   fi
 
-  info "Clés age à sauvegarder dans 1Password :"
+  info "Clés age à sauvegarder dans un environnement sécurisé :"
   {
     printf "\n================= AGE PRIVATE KEY =================\n%s\n===================================================\n\n" "$priv"
     printf "================== AGE PUBLIC KEY =================\n%s\n===================================================\n\n" "$pub"

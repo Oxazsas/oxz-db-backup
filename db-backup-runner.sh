@@ -302,14 +302,12 @@ webhook_event() {
   local dest_local="${10}" dest_remote="${11}" file="${12}"
 
   # Déterminer le statut et l'emoji
-  local is_success emoji color status_text
+  local emoji color status_text
   if [ "${exit_code:-0}" -eq 0 ]; then
-    is_success="true"
     emoji="✅"
     color="#36a64f"
     status_text="Succès"
   else
-    is_success="false"
     emoji="❌"
     color="#dc3545"
     status_text="Échec"
@@ -363,81 +361,71 @@ webhook_event() {
   local text
   text="${emoji} *Backup ${status_text}* — ${db} sur $(hostname -s)"
 
-  # Construire le payload Slack avec Block Kit
+  # Construire le bloc fichier (optionnel)
+  local file_block=""
+  if [ -n "${file:-}" ]; then
+    file_block=",{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*Fichier :*\n\`${file}\`\"}}"
+  fi
+
+  # Construire le bloc erreur (optionnel)
+  local error_block=""
+  if [ -n "${error:-}" ]; then
+    # Échapper les backticks et guillemets dans l'erreur pour JSON
+    local escaped_error
+    escaped_error="$(printf '%s' "$error" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g')"
+    error_block=",{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*❗ Erreur :*\n\`\`\`${escaped_error}\`\`\`\"}}"
+  fi
+
+  # Construire le payload complet
   local payload
-  payload="$(jq -c -n \
-    --arg text "$text" \
-    --arg emoji "$emoji" \
-    --arg status_text "$status_text" \
-    --arg color "$color" \
-    --arg event "$event" \
-    --arg job_id "$job_id" \
-    --arg db "$db" \
-    --arg hostname "$(hostname -s)" \
-    --arg at "$(ts_utc)" \
-    --arg step "$step" \
-    --argjson exit_code "${exit_code:-0}" \
-    --arg error "${error:-}" \
-    --arg duration_human "$duration_human" \
-    --arg size_human "$size_human" \
-    --arg destinations "$destinations" \
-    --arg file "${file:-}" \
-    '{
-      text: $text,
-      attachments: [
+  payload=$(cat <<EOF
+{
+  "text": "${text}",
+  "attachments": [
+    {
+      "color": "${color}",
+      "blocks": [
         {
-          color: $color,
-          blocks: [
-            {
-              type: "header",
-              text: {
-                type: "plain_text",
-                text: ($emoji + " Backup " + $status_text),
-                emoji: true
-              }
-            },
-            {
-              type: "section",
-              fields: [
-                { type: "mrkdwn", text: ("*Base de données :*\n`" + $db + "`") },
-                { type: "mrkdwn", text: ("*Serveur :*\n`" + $hostname + "`") }
-              ]
-            },
-            {
-              type: "section",
-              fields: [
-                { type: "mrkdwn", text: ("*Job ID :*\n`" + $job_id + "`") },
-                { type: "mrkdwn", text: ("*Durée :*\n" + $duration_human) }
-              ]
-            },
-            {
-              type: "section",
-              fields: [
-                { type: "mrkdwn", text: ("*Taille :*\n" + $size_human) },
-                { type: "mrkdwn", text: ("*Destinations :*\n" + $destinations) }
-              ]
-            }
-          ] + (if $file != "" then [
-            {
-              type: "section",
-              text: { type: "mrkdwn", text: ("*Fichier :*\n`" + $file + "`") }
-            }
-          ] else [] end) + (if $error != "" then [
-            {
-              type: "section",
-              text: { type: "mrkdwn", text: ("*❗ Erreur :*\n```" + $error + "```") }
-            }
-          ] else [] end) + [
-            {
-              type: "context",
-              elements: [
-                { type: "mrkdwn", text: ("📅 " + $at + " • Étape: " + $step + " • Code: " + ($exit_code | tostring)) }
-              ]
-            }
+          "type": "header",
+          "text": {
+            "type": "plain_text",
+            "text": "${emoji} Backup ${status_text}",
+            "emoji": true
+          }
+        },
+        {
+          "type": "section",
+          "fields": [
+            {"type": "mrkdwn", "text": "*Base de données :*\n\`${db}\`"},
+            {"type": "mrkdwn", "text": "*Serveur :*\n\`$(hostname -s)\`"}
+          ]
+        },
+        {
+          "type": "section",
+          "fields": [
+            {"type": "mrkdwn", "text": "*Job ID :*\n\`${job_id}\`"},
+            {"type": "mrkdwn", "text": "*Durée :*\n${duration_human}"}
+          ]
+        },
+        {
+          "type": "section",
+          "fields": [
+            {"type": "mrkdwn", "text": "*Taille :*\n${size_human}"},
+            {"type": "mrkdwn", "text": "*Destinations :*\n${destinations}"}
+          ]
+        }${file_block}${error_block},
+        {
+          "type": "context",
+          "elements": [
+            {"type": "mrkdwn", "text": "📅 $(ts_utc) • Étape: ${step} • Code: ${exit_code:-0}"}
           ]
         }
       ]
-    }')"
+    }
+  ]
+}
+EOF
+)
 
   webhook_send "$cfg" "$payload"
 }
@@ -465,81 +453,73 @@ webhook_restore_test() {
   local text
   text="${emoji} *${header_text}* — ${db} sur $(hostname -s)"
 
-  # Construire le payload Slack avec Block Kit
+  # Construire le bloc fichier (optionnel)
+  local file_block=""
+  if [ -n "${backup_file:-}" ]; then
+    file_block=",{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*Fichier testé :*\n\`${backup_file}\`\"}}"
+  fi
+
+  # Construire le bloc message/résultat (optionnel)
+  local message_block=""
+  if [ -n "${message:-}" ]; then
+    # Échapper les caractères spéciaux pour JSON
+    local escaped_message
+    escaped_message="$(printf '%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+    message_block=",{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*Résultat :*\n${escaped_message}\"}}"
+  fi
+
+  # Construire le payload complet
   local payload
-  payload="$(jq -c -n \
-    --arg text "$text" \
-    --arg emoji "$emoji" \
-    --arg header_text "$header_text" \
-    --arg color "$color" \
-    --arg event "$event" \
-    --arg job_id "$job_id" \
-    --arg db "$db" \
-    --arg hostname "$(hostname -s)" \
-    --arg at "$(ts_utc)" \
-    --arg status "$status" \
-    --arg status_text "$status_text" \
-    --arg message "${message:-}" \
-    --arg backup_file "${backup_file:-}" \
-    --argjson every_days "${every_days:-0}" \
-    '{
-      text: $text,
-      attachments: [
+  payload=$(cat <<EOF
+{
+  "text": "${text}",
+  "attachments": [
+    {
+      "color": "${color}",
+      "blocks": [
         {
-          color: $color,
-          blocks: [
-            {
-              type: "header",
-              text: {
-                type: "plain_text",
-                text: ($emoji + " " + $header_text),
-                emoji: true
-              }
-            },
-            {
-              type: "section",
-              fields: [
-                { type: "mrkdwn", text: ("*Base de données :*\n`" + $db + "`") },
-                { type: "mrkdwn", text: ("*Serveur :*\n`" + $hostname + "`") }
-              ]
-            },
-            {
-              type: "section",
-              fields: [
-                { type: "mrkdwn", text: ("*Job ID :*\n`" + $job_id + "`") },
-                { type: "mrkdwn", text: ("*Fréquence test :*\nTous les " + ($every_days | tostring) + " jours") }
-              ]
-            }
-          ] + (if $backup_file != "" then [
-            {
-              type: "section",
-              text: { type: "mrkdwn", text: ("*Fichier testé :*\n`" + $backup_file + "`") }
-            }
-          ] else [] end) + (if $message != "" then [
-            {
-              type: "section",
-              text: { type: "mrkdwn", text: ("*Résultat :*\n" + $message) }
-            }
-          ] else [] end) + [
-            {
-              type: "divider"
-            },
-            {
-              type: "context",
-              elements: [
-                { type: "mrkdwn", text: "💡 *Action recommandée :* Effectuez un test de restauration complet manuellement avec `oxz-db-backup-restore`" }
-              ]
-            },
-            {
-              type: "context",
-              elements: [
-                { type: "mrkdwn", text: ("📅 " + $at + " • Statut: " + $status_text) }
-              ]
-            }
+          "type": "header",
+          "text": {
+            "type": "plain_text",
+            "text": "${emoji} ${header_text}",
+            "emoji": true
+          }
+        },
+        {
+          "type": "section",
+          "fields": [
+            {"type": "mrkdwn", "text": "*Base de données :*\n\`${db}\`"},
+            {"type": "mrkdwn", "text": "*Serveur :*\n\`$(hostname -s)\`"}
+          ]
+        },
+        {
+          "type": "section",
+          "fields": [
+            {"type": "mrkdwn", "text": "*Job ID :*\n\`${job_id}\`"},
+            {"type": "mrkdwn", "text": "*Fréquence test :*\nTous les ${every_days:-0} jours"}
+          ]
+        }${file_block}${message_block},
+        {
+          "type": "divider"
+        },
+        {
+          "type": "context",
+          "elements": [
+            {"type": "mrkdwn", "text": "💡 *Action recommandée :* Effectuez un test de restauration complet manuellement avec \`oxz-db-backup-restore\`"}
+          ]
+        },
+        {
+          "type": "context",
+          "elements": [
+            {"type": "mrkdwn", "text": "📅 $(ts_utc) • Statut: ${status_text}"}
           ]
         }
       ]
-    }')"
+    }
+  ]
+}
+EOF
+)
 
   webhook_send "$cfg" "$payload"
 }
