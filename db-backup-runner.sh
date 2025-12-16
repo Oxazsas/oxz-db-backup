@@ -297,19 +297,79 @@ webhook_send() {
 }
 
 webhook_event() {
+  # Envoie une notification Slack formatée pour les événements de backup
   local cfg="$1" event="$2" job_id="$3" db="$4" step="$5" exit_code="$6" error="$7" duration_ms="$8" size_bytes="$9"
   local dest_local="${10}" dest_remote="${11}" file="${12}"
 
-  # Slack Incoming Webhooks aiment (souvent) au moins un champ "text"
-  local text
-  text="[$(hostname -s)] ${event} job=${job_id} db=${db} step=${step} code=${exit_code}"
-  if [ -n "$error" ]; then
-    text="${text} error=${error}"
+  # Déterminer le statut et l'emoji
+  local is_success emoji color status_text
+  if [ "${exit_code:-0}" -eq 0 ]; then
+    is_success="true"
+    emoji="✅"
+    color="#36a64f"
+    status_text="Succès"
+  else
+    is_success="false"
+    emoji="❌"
+    color="#dc3545"
+    status_text="Échec"
   fi
 
+  # Formater la taille en unités lisibles
+  local size_human
+  if [ "${size_bytes:-0}" -gt 0 ]; then
+    if [ "$size_bytes" -ge 1073741824 ]; then
+      size_human="$(awk "BEGIN {printf \"%.2f GB\", ${size_bytes}/1073741824}")"
+    elif [ "$size_bytes" -ge 1048576 ]; then
+      size_human="$(awk "BEGIN {printf \"%.2f MB\", ${size_bytes}/1048576}")"
+    elif [ "$size_bytes" -ge 1024 ]; then
+      size_human="$(awk "BEGIN {printf \"%.2f KB\", ${size_bytes}/1024}")"
+    else
+      size_human="${size_bytes} B"
+    fi
+  else
+    size_human="-"
+  fi
+
+  # Formater la durée
+  local duration_human
+  if [ "${duration_ms:-0}" -gt 0 ]; then
+    if [ "$duration_ms" -ge 60000 ]; then
+      duration_human="$(awk "BEGIN {printf \"%.1f min\", ${duration_ms}/60000}")"
+    elif [ "$duration_ms" -ge 1000 ]; then
+      duration_human="$(awk "BEGIN {printf \"%.1f sec\", ${duration_ms}/1000}")"
+    else
+      duration_human="${duration_ms} ms"
+    fi
+  else
+    duration_human="-"
+  fi
+
+  # Construire les destinations
+  local destinations=""
+  if [ "$dest_local" = "true" ]; then
+    destinations="Local"
+  fi
+  if [ "$dest_remote" = "true" ]; then
+    if [ -n "$destinations" ]; then
+      destinations="${destinations} + Remote"
+    else
+      destinations="Remote"
+    fi
+  fi
+  [ -z "$destinations" ] && destinations="-"
+
+  # Header text (fallback pour clients sans blocks)
+  local text
+  text="${emoji} *Backup ${status_text}* — ${db} sur $(hostname -s)"
+
+  # Construire le payload Slack avec Block Kit
   local payload
   payload="$(jq -c -n \
     --arg text "$text" \
+    --arg emoji "$emoji" \
+    --arg status_text "$status_text" \
+    --arg color "$color" \
     --arg event "$event" \
     --arg job_id "$job_id" \
     --arg db "$db" \
@@ -318,58 +378,167 @@ webhook_event() {
     --arg step "$step" \
     --argjson exit_code "${exit_code:-0}" \
     --arg error "${error:-}" \
-    --argjson duration_ms "${duration_ms:-0}" \
-    --argjson size_bytes "${size_bytes:-0}" \
-    --argjson dest_local "${dest_local:-false}" \
-    --argjson dest_remote "${dest_remote:-false}" \
+    --arg duration_human "$duration_human" \
+    --arg size_human "$size_human" \
+    --arg destinations "$destinations" \
     --arg file "${file:-}" \
-    '{text:$text, event:$event, job_id:$job_id, db:$db, hostname:$hostname, at:$at, step:$step, exit_code:$exit_code, error:$error, duration_ms:$duration_ms, size_bytes:$size_bytes, destinations:{local:$dest_local, remote_rsync:$dest_remote}, file:$file}')"
+    '{
+      text: $text,
+      attachments: [
+        {
+          color: $color,
+          blocks: [
+            {
+              type: "header",
+              text: {
+                type: "plain_text",
+                text: ($emoji + " Backup " + $status_text),
+                emoji: true
+              }
+            },
+            {
+              type: "section",
+              fields: [
+                { type: "mrkdwn", text: ("*Base de données :*\n`" + $db + "`") },
+                { type: "mrkdwn", text: ("*Serveur :*\n`" + $hostname + "`") }
+              ]
+            },
+            {
+              type: "section",
+              fields: [
+                { type: "mrkdwn", text: ("*Job ID :*\n`" + $job_id + "`") },
+                { type: "mrkdwn", text: ("*Durée :*\n" + $duration_human) }
+              ]
+            },
+            {
+              type: "section",
+              fields: [
+                { type: "mrkdwn", text: ("*Taille :*\n" + $size_human) },
+                { type: "mrkdwn", text: ("*Destinations :*\n" + $destinations) }
+              ]
+            }
+          ] + (if $file != "" then [
+            {
+              type: "section",
+              text: { type: "mrkdwn", text: ("*Fichier :*\n`" + $file + "`") }
+            }
+          ] else [] end) + (if $error != "" then [
+            {
+              type: "section",
+              text: { type: "mrkdwn", text: ("*❗ Erreur :*\n```" + $error + "```") }
+            }
+          ] else [] end) + [
+            {
+              type: "context",
+              elements: [
+                { type: "mrkdwn", text: ("📅 " + $at + " • Étape: " + $step + " • Code: " + ($exit_code | tostring)) }
+              ]
+            }
+          ]
+        }
+      ]
+    }')"
 
   webhook_send "$cfg" "$payload"
 }
 
 webhook_restore_test() {
+  # Envoie une notification Slack formatée pour les tests de restauration
   # event: restore_test.reminder | restore_test.partial_failure
   local cfg="$1" event="$2" job_id="$3" db="$4" status="$5" message="$6" backup_file="$7" every_days="$8"
 
-  local text
-  text="[$(hostname -s)] ${event} job=${job_id} db=${db} status=${status}"
-  if [ -n "$backup_file" ]; then
-    text="${text} backup=${backup_file}"
-  fi
-  if [ "${every_days:-0}" -gt 0 ]; then
-    text="${text} every_days=${every_days}"
-  fi
-  if [ -n "$message" ]; then
-    text="${text} msg=${message}"
+  # Déterminer le statut et l'emoji
+  local emoji color status_text header_text
+  if [ "$status" = "ok" ]; then
+    emoji="🔔"
+    color="#ffc107"
+    status_text="Rappel"
+    header_text="Test de restauration recommandé"
+  else
+    emoji="⚠️"
+    color="#dc3545"
+    status_text="Échec partiel"
+    header_text="Échec du test de restauration"
   fi
 
+  # Header text (fallback)
+  local text
+  text="${emoji} *${header_text}* — ${db} sur $(hostname -s)"
+
+  # Construire le payload Slack avec Block Kit
   local payload
   payload="$(jq -c -n \
     --arg text "$text" \
+    --arg emoji "$emoji" \
+    --arg header_text "$header_text" \
+    --arg color "$color" \
     --arg event "$event" \
     --arg job_id "$job_id" \
     --arg db "$db" \
     --arg hostname "$(hostname -s)" \
     --arg at "$(ts_utc)" \
     --arg status "$status" \
-    --arg message "$message" \
-    --arg backup_file "$backup_file" \
+    --arg status_text "$status_text" \
+    --arg message "${message:-}" \
+    --arg backup_file "${backup_file:-}" \
     --argjson every_days "${every_days:-0}" \
     '{
-      text:$text,
-      event:$event,
-      job_id:$job_id,
-      db:$db,
-      hostname:$hostname,
-      at:$at,
-      restore_test:{
-        status:$status,
-        message:(if $message=="" then null else $message end),
-        backup_file:(if $backup_file=="" then null else $backup_file end),
-        every_days:$every_days,
-        note:"Test partiel effectué (sans clé privée). Faites un restore complet MANUEL périodiquement."
-      }
+      text: $text,
+      attachments: [
+        {
+          color: $color,
+          blocks: [
+            {
+              type: "header",
+              text: {
+                type: "plain_text",
+                text: ($emoji + " " + $header_text),
+                emoji: true
+              }
+            },
+            {
+              type: "section",
+              fields: [
+                { type: "mrkdwn", text: ("*Base de données :*\n`" + $db + "`") },
+                { type: "mrkdwn", text: ("*Serveur :*\n`" + $hostname + "`") }
+              ]
+            },
+            {
+              type: "section",
+              fields: [
+                { type: "mrkdwn", text: ("*Job ID :*\n`" + $job_id + "`") },
+                { type: "mrkdwn", text: ("*Fréquence test :*\nTous les " + ($every_days | tostring) + " jours") }
+              ]
+            }
+          ] + (if $backup_file != "" then [
+            {
+              type: "section",
+              text: { type: "mrkdwn", text: ("*Fichier testé :*\n`" + $backup_file + "`") }
+            }
+          ] else [] end) + (if $message != "" then [
+            {
+              type: "section",
+              text: { type: "mrkdwn", text: ("*Résultat :*\n" + $message) }
+            }
+          ] else [] end) + [
+            {
+              type: "divider"
+            },
+            {
+              type: "context",
+              elements: [
+                { type: "mrkdwn", text: "💡 *Action recommandée :* Effectuez un test de restauration complet manuellement avec `oxz-db-backup-restore`" }
+              ]
+            },
+            {
+              type: "context",
+              elements: [
+                { type: "mrkdwn", text: ("📅 " + $at + " • Statut: " + $status_text) }
+              ]
+            }
+          ]
+        }
+      ]
     }')"
 
   webhook_send "$cfg" "$payload"
@@ -574,11 +743,23 @@ write_metadata() {
 }
 
 update_state() {
+  # Met à jour le state du job tout en préservant les champs liés au restore_test
   local job_id="$1" last_attempt="$2" last_success="$3" exit_code="$4" error="$5" dump_file="$6" size_bytes="$7" sha="$8"
   local local_path="$9" remote_path="${10}" duration_ms="${11}"
 
   local st content
   st="$(safe_state_path "$job_id")"
+
+  # Récupérer les champs restore_test existants pour les préserver
+  local existing_restore_test_at="" existing_restore_test="{}"
+  if [ -f "$st" ]; then
+    existing_restore_test_at="$(jq -r '.last_restore_test_at // empty' "$st" 2>/dev/null || true)"
+    existing_restore_test="$(jq -c '.last_restore_test // {}' "$st" 2>/dev/null || printf '{}')"
+  fi
+  # S'assurer que existing_restore_test est un objet JSON valide
+  if [ -z "$existing_restore_test" ] || [ "$existing_restore_test" = "null" ]; then
+    existing_restore_test="{}"
+  fi
 
   content="$(jq -c -n \
     --arg job_id "$job_id" \
@@ -592,6 +773,8 @@ update_state() {
     --arg local_path "$local_path" \
     --arg remote_path "$remote_path" \
     --argjson duration_ms "$duration_ms" \
+    --arg existing_restore_test_at "$existing_restore_test_at" \
+    --argjson existing_restore_test "$existing_restore_test" \
     '{
       job_id:$job_id,
       last_attempt_at:$last_attempt_at,
@@ -600,7 +783,9 @@ update_state() {
       last_error:(if $last_error=="" then null else $last_error end),
       last_backup:(if $dump_filename=="" then null else
         {filename:$dump_filename, size_bytes:$size_bytes, sha256:$sha256, local_path:(if $local_path=="" then null else $local_path end), remote_path:(if $remote_path=="" then null else $remote_path end), duration_ms:$duration_ms}
-      end)
+      end),
+      last_restore_test_at:(if $existing_restore_test_at=="" then null else $existing_restore_test_at end),
+      last_restore_test:(if $existing_restore_test=={} then null else $existing_restore_test end)
     }')"
 
   safe_write_atomic "$st" 600 root root "$content" || true
