@@ -61,6 +61,7 @@ sudo apt install -y bash curl jq rsync zstd age mysql-client
 2.  Lancez l'installateur :
 
     ```bash
+    chmod +x install.sh
     sudo ./install.sh
     ```
 
