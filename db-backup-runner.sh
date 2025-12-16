@@ -269,6 +269,21 @@ rsync_ssh_e() {
 }
 
 ###############################################
+# JSON escape helper
+###############################################
+# Échappe une chaîne pour une utilisation sûre dans du JSON
+json_escape() {
+  local s="${1:-}"
+  # Échapper backslash, guillemets, newlines, tabs, returns
+  s="${s//\\/\\\\}"      # \ -> \\
+  s="${s//\"/\\\"}"      # " -> \"
+  s="${s//$'\n'/\\n}"    # newline -> \n
+  s="${s//$'\t'/\\t}"    # tab -> \t
+  s="${s//$'\r'/\\r}"    # carriage return -> \r
+  printf '%s' "$s"
+}
+
+###############################################
 # Webhook
 ###############################################
 webhook_send() {
@@ -357,9 +372,9 @@ webhook_event() {
   fi
   [ -z "$destinations" ] && destinations="-"
 
-  # Header text (fallback pour clients sans blocks)
+  # Header text (fallback pour clients sans blocks) - échappé pour JSON
   local text
-  text="${emoji} *Backup ${status_text}* — ${db} sur $(hostname -s)"
+  text="$(json_escape "${emoji} *Backup ${status_text}* — ${db} sur $(hostname -s)")"
 
   # Construire le bloc fichier (optionnel)
   local file_block=""
@@ -370,9 +385,8 @@ webhook_event() {
   # Construire le bloc erreur (optionnel)
   local error_block=""
   if [ -n "${error:-}" ]; then
-    # Échapper les backticks et guillemets dans l'erreur pour JSON
     local escaped_error
-    escaped_error="$(printf '%s' "$error" | sed 's/\\/\\\\/g; s/"/\\"/g; s/`/\\`/g')"
+    escaped_error="$(json_escape "$error")"
     error_block=",{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*❗ Erreur :*\n\`\`\`${escaped_error}\`\`\`\"}}"
   fi
 
@@ -449,9 +463,9 @@ webhook_restore_test() {
     header_text="Échec du test de restauration"
   fi
 
-  # Header text (fallback)
+  # Header text (fallback) - échappé pour JSON
   local text
-  text="${emoji} *${header_text}* — ${db} sur $(hostname -s)"
+  text="$(json_escape "${emoji} *${header_text}* — ${db} sur $(hostname -s)")"
 
   # Construire le bloc fichier (optionnel)
   local file_block=""
@@ -462,9 +476,8 @@ webhook_restore_test() {
   # Construire le bloc message/résultat (optionnel)
   local message_block=""
   if [ -n "${message:-}" ]; then
-    # Échapper les caractères spéciaux pour JSON
     local escaped_message
-    escaped_message="$(printf '%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+    escaped_message="$(json_escape "$message")"
     message_block=",{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*Résultat :*\n${escaped_message}\"}}"
   fi
 

@@ -73,6 +73,14 @@ sql_quote() {
   printf "'%s'" "$s"
 }
 
+# Échappe une chaîne pour utilisation sûre dans un contexte shell single-quoted distant
+# Transforme: ' -> '"'"'
+sh_q() {
+  local s="${1:-}"
+  s="${s//\'/\'\"\'\"\'}"
+  printf "'%s'" "$s"
+}
+
 ask_yes_no() {
   local prompt="$1" default="${2:-Y}" ans=""
   while true; do
@@ -465,7 +473,7 @@ list_dumps_remote_job() {
   fi
 
   local out
-  if ! out="$("${ssh[@]}" "$target" "ls -1 -- '$remote_dir' 2>/dev/null | grep -E '\.sql\.zst\.age$' || true")"; then
+  if ! out="$("${ssh[@]}" "$target" "ls -1 -- $(sh_q "$remote_dir") 2>/dev/null | grep -E '\.sql\.zst\.age$' || true")"; then
     return 1
   fi
 

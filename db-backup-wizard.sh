@@ -73,6 +73,14 @@ trim() {
 
 validate_job_id() { [[ "${1:-}" =~ ^[a-zA-Z0-9_-]{3,64}$ ]]; }
 
+# Échappe une chaîne pour utilisation sûre dans un contexte shell single-quoted distant
+# Transforme: ' -> '"'"'
+sh_q() {
+  local s="${1:-}"
+  s="${s//\'/\'\"\'\"\'}"
+  printf "'%s'" "$s"
+}
+
 safe_write_file() {
   local path="$1" mode="$2" owner="$3" group="$4" content="$5"
   local tmp
@@ -491,7 +499,7 @@ test_remote_rsync() {
   fi
 
   info "Test remote: mkdir ${target}:${remote_dir}"
-  "${ssh_cmd[@]}" "$target" "mkdir -p -- '$remote_dir'" || { rm -rf "$tmpdir"; return 1; }
+  "${ssh_cmd[@]}" "$target" "mkdir -p -- $(sh_q "$remote_dir")" || { rm -rf "$tmpdir"; return 1; }
 
   info "Test remote: rsync upload"
   local ssh_e="ssh -p ${port} $(ssh_base_opts)"
@@ -501,10 +509,10 @@ test_remote_rsync() {
   rsync -a -e "$ssh_e" "$tmpfile" "${target}:${remote_file}" || { rm -rf "$tmpdir"; return 1; }
 
   info "Test remote: présence fichier"
-  "${ssh_cmd[@]}" "$target" "test -f '$remote_file'" || { rm -rf "$tmpdir"; return 1; }
+  "${ssh_cmd[@]}" "$target" "test -f $(sh_q "$remote_file")" || { rm -rf "$tmpdir"; return 1; }
 
   info "Test remote: nettoyage"
-  "${ssh_cmd[@]}" "$target" "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true
+  "${ssh_cmd[@]}" "$target" "rm -rf -- $(sh_q "$remote_dir")" >/dev/null 2>&1 || true
 
   rm -rf "$tmpdir"
   info "Remote rsync: OK"
